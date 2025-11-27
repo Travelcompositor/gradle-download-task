@@ -19,7 +19,6 @@ import java.util.concurrent.CompletableFuture;
 public class DownloadExtension {
     private final ProjectLayout projectLayout;
     private final Logger logger;
-    private final Object servicesOwner;
     private final ObjectFactory objectFactory;
     private final boolean isOffline;
     private final File buildDir;
@@ -48,7 +47,7 @@ public class DownloadExtension {
      */
     public DownloadExtension(Project project, @Nullable Task task) {
         this(project.getLayout(), project.getLogger(),
-                task != null ? task : project, project.getObjects(),
+                project.getObjects(),
                 project.getGradle().getStartParameter().isOffline(),
                 project.getLayout().getBuildDirectory().getAsFile().get());
     }
@@ -57,18 +56,15 @@ public class DownloadExtension {
      * Creates a new extension
      * @param projectLayout the project layout
      * @param logger the project logger
-     * @param servicesOwner either the current project or (preferably) the
-     * current task
      * @param objectFactory the project's object factory
      * @param isOffline whether Gradle has been started in offline mode or not
      * @param buildDir the project's build directory
      */
     private DownloadExtension(ProjectLayout projectLayout, Logger logger,
-            Object servicesOwner, ObjectFactory objectFactory, boolean isOffline,
+                              ObjectFactory objectFactory, boolean isOffline,
             File buildDir) {
         this.projectLayout = projectLayout;
         this.logger = logger;
-        this.servicesOwner = servicesOwner;
         this.objectFactory = objectFactory;
         this.isOffline = isOffline;
         this.buildDir = buildDir;
@@ -80,7 +76,7 @@ public class DownloadExtension {
      */
     public void run(Action<DownloadSpec> action) {
         DownloadAction da = new DownloadAction(projectLayout, logger,
-                servicesOwner, objectFactory, isOffline, buildDir);
+                objectFactory, isOffline, buildDir);
         action.execute(da);
         try {
             da.execute(false).get();
@@ -102,7 +98,7 @@ public class DownloadExtension {
      */
     public CompletableFuture<Void> runAsync(Action<DownloadSpec> action) {
         DownloadAction da = new DownloadAction(projectLayout, logger,
-                servicesOwner, objectFactory, isOffline, buildDir);
+                objectFactory, isOffline, buildDir);
         action.execute(da);
         try {
             return da.execute(false);

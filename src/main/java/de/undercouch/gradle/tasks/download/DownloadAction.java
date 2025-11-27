@@ -1,22 +1,12 @@
 package de.undercouch.gradle.tasks.download;
 
-import de.undercouch.gradle.tasks.download.internal.CachingHttpClientFactory;
-import de.undercouch.gradle.tasks.download.internal.DefaultDownloadDetails;
-import de.undercouch.gradle.tasks.download.internal.HttpClientFactory;
-import de.undercouch.gradle.tasks.download.internal.ProgressLoggerWrapper;
-import de.undercouch.gradle.tasks.download.internal.WorkerExecutorFuture;
-import de.undercouch.gradle.tasks.download.internal.WorkerExecutorHelper;
+import de.undercouch.gradle.tasks.download.internal.*;
 import groovy.json.JsonOutput;
 import groovy.json.JsonSlurper;
 import groovy.lang.Closure;
 import kotlin.jvm.functions.Function0;
 import org.apache.hc.client5.http.ClientProtocolException;
-import org.apache.hc.client5.http.auth.AuthCache;
-import org.apache.hc.client5.http.auth.AuthScope;
-import org.apache.hc.client5.http.auth.Credentials;
-import org.apache.hc.client5.http.auth.CredentialsProvider;
-import org.apache.hc.client5.http.auth.CredentialsStore;
-import org.apache.hc.client5.http.auth.UsernamePasswordCredentials;
+import org.apache.hc.client5.http.auth.*;
 import org.apache.hc.client5.http.classic.methods.HttpUriRequestBase;
 import org.apache.hc.client5.http.config.RequestConfig;
 import org.apache.hc.client5.http.impl.auth.BasicAuthCache;
@@ -25,39 +15,20 @@ import org.apache.hc.client5.http.impl.auth.BasicScheme;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.client5.http.utils.DateUtils;
-import org.apache.hc.core5.http.ClassicHttpResponse;
-import org.apache.hc.core5.http.Header;
-import org.apache.hc.core5.http.HttpEntity;
-import org.apache.hc.core5.http.HttpHeaders;
-import org.apache.hc.core5.http.HttpHost;
-import org.apache.hc.core5.http.HttpResponse;
-import org.apache.hc.core5.http.HttpStatus;
+import org.apache.hc.core5.http.*;
 import org.apache.hc.core5.http.io.HttpClientResponseHandler;
 import org.apache.hc.core5.http.io.entity.StringEntity;
 import org.apache.hc.core5.util.Timeout;
-import org.gradle.api.Action;
-import org.gradle.api.JavaVersion;
-import org.gradle.api.Project;
-import org.gradle.api.Task;
-import org.gradle.api.Transformer;
+import org.gradle.api.*;
 import org.gradle.api.UncheckedIOException;
-import org.gradle.api.file.Directory;
-import org.gradle.api.file.ProjectLayout;
-import org.gradle.api.file.RegularFile;
-import org.gradle.api.file.RelativePath;
+import org.gradle.api.file.*;
 import org.gradle.api.logging.Logger;
 import org.gradle.api.model.ObjectFactory;
 import org.gradle.api.provider.Provider;
 import org.gradle.util.GradleVersion;
 
 import javax.annotation.Nullable;
-import java.io.BufferedInputStream;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.ObjectInputStream;
-import java.io.PrintWriter;
-import java.io.Serializable;
+import java.io.*;
 import java.lang.reflect.Array;
 import java.net.MalformedURLException;
 import java.net.URI;
@@ -68,15 +39,7 @@ import java.nio.channels.AsynchronousFileChannel;
 import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -96,9 +59,9 @@ public class DownloadAction implements DownloadSpec, Serializable {
     //         GradleVersion.version("5.0");
 
     // HEADS UP: FIELDS ARE POTENTIALLY ACCESSED BY MULTIPLE THREADS!
-    private final ProjectLayout projectLayout;
+    private final DirectoryProperty buildDirectory;
+    private final Directory projectDirectory;
     private final Logger logger;
-    private final Object servicesOwner;
     private final ObjectFactory objectFactory;
     private final boolean isOffline;
     private final List<Object> sourceObjects = new ArrayList<>(1);
@@ -149,7 +112,7 @@ public class DownloadAction implements DownloadSpec, Serializable {
     public DownloadAction(Project project, @Nullable Task task) {
         // get required project properties now to enable configuration cache
         this(project.getLayout(), project.getLogger(),
-                task != null ? task : project, project.getObjects(),
+                project.getObjects(),
                 project.getGradle().getStartParameter().isOffline(),
                 project.getLayout().getBuildDirectory().getAsFile().get());
     }
@@ -158,18 +121,16 @@ public class DownloadAction implements DownloadSpec, Serializable {
      * Creates a new download action
      * @param projectLayout the project layout
      * @param logger the project logger
-     * @param servicesOwner either the current project or (preferably) the
-     * current task
      * @param objectFactory the project's object factory
      * @param isOffline whether Gradle has been started in offline mode or not
      * @param buildDir the project's build directory
      */
     DownloadAction(ProjectLayout projectLayout, Logger logger,
-            Object servicesOwner, ObjectFactory objectFactory, boolean isOffline,
+                   ObjectFactory objectFactory, boolean isOffline,
             File buildDir) {
-        this.projectLayout = projectLayout;
+        this.buildDirectory = projectLayout.getBuildDirectory();
+        this.projectDirectory = projectLayout.getProjectDirectory();
         this.logger = logger;
-        this.servicesOwner = servicesOwner;
         this.objectFactory = objectFactory;
         this.isOffline = isOffline;
         this.downloadTaskDir = new File(buildDir, "download-task");
@@ -224,7 +185,7 @@ public class DownloadAction implements DownloadSpec, Serializable {
         List<URL> sources = getSources();
         File dest = getDest();
 
-        if (dest.equals(projectLayout.getBuildDirectory().get().getAsFile())) {
+        if (dest.equals(buildDirectory.get().getAsFile())) {
             //make sure build dir exists
             dest.mkdirs();
         }
@@ -263,15 +224,6 @@ public class DownloadAction implements DownloadSpec, Serializable {
             workerExecutor.submit(() -> {
                 // create progress logger
                 ProgressLoggerWrapper progressLogger = new ProgressLoggerWrapper(logger);
-                if (!quiet) {
-                    try {
-                        progressLogger.init(servicesOwner, src.toString());
-                    } catch (Exception e) {
-                        // unable to get progress logger
-                        logger.error("Unable to get progress logger. Download "
-                                + "progress will not be displayed.");
-                    }
-                }
 
                 try {
                     execute(src, destFile, clientFactory, progressLogger);
@@ -750,7 +702,7 @@ public class DownloadAction implements DownloadSpec, Serializable {
         }
 
         boolean isDirectory = destFile.isDirectory() ||
-                destFile.equals(projectLayout.getBuildDirectory().get().getAsFile());
+                destFile.equals(buildDirectory.get().getAsFile());
         if (multipleSources || isDirectory) {
             // guess name from URL
             String name = src.toString();
@@ -1095,7 +1047,7 @@ public class DownloadAction implements DownloadSpec, Serializable {
             dir = ((Provider<?>)dir).getOrNull();
         }
         if (dir instanceof CharSequence) {
-            return projectLayout.getProjectDirectory().file(dir.toString()).getAsFile();
+            return projectDirectory.file(dir.toString()).getAsFile();
         } else if (dir instanceof Directory) {
             File f = ((Directory)dir).getAsFile();
 
@@ -1149,7 +1101,7 @@ public class DownloadAction implements DownloadSpec, Serializable {
             location = ((Provider<?>)location).getOrNull();
         }
         if (location instanceof CharSequence) {
-            this.cachedETagsFile = projectLayout.getProjectDirectory()
+            this.cachedETagsFile = projectDirectory
                     .file(location.toString()).getAsFile();
         } else if (location instanceof RegularFile) {
             this.cachedETagsFile = ((RegularFile)location).getAsFile();
